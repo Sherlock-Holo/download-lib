@@ -17,7 +17,7 @@ func TestDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log(job.tmpDir)
+	t.Log(job.TmpDir)
 	t.Log(job.GID)
 	t.Log(job.Filename)
 	t.Log(job.SaveDir)

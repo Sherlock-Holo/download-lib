@@ -22,6 +22,7 @@ type Job struct {
 	Filename  string
 	TotalSize int64
 	SaveDir   string
+	TmpDir    string
 
 	completeSize int64
 	failCtx      context.Context
@@ -30,7 +31,6 @@ type Job struct {
 	notify       chan struct{} // len is len(requests)
 	doneCtx      context.Context
 	doneFunc     context.CancelFunc
-	tmpDir       string
 	speed        int64 // speed per second
 }
 
@@ -90,7 +90,7 @@ func (j *Job) checkDone() {
 
 	// write all tmp file content to save file
 	for i := range j.requests {
-		tmpFile, err := os.Open(filepath.Join(j.tmpDir, strconv.Itoa(i)))
+		tmpFile, err := os.Open(filepath.Join(j.TmpDir, strconv.Itoa(i)))
 		if err != nil {
 			j.failFunc()
 			return
@@ -105,7 +105,7 @@ func (j *Job) checkDone() {
 	}
 	saveFile.Close()
 
-	if err := os.RemoveAll(j.tmpDir); err != nil {
+	if err := os.RemoveAll(j.TmpDir); err != nil {
 		log.Println("removing tmp dir error", err)
 	}
 
@@ -179,7 +179,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 	// tmp dir is savePath/filename-gid-tmp
 	tmpDir := filepath.Join(savePath, filename+"-"+gid+"-"+"tmp")
-	j.tmpDir = tmpDir
+	j.TmpDir = tmpDir
 	if err := os.Mkdir(tmpDir, os.FileMode(0770)); err != nil {
 		return nil, err
 	}
