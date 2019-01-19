@@ -157,6 +157,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 		if err != nil {
 			return nil, err
 		}
+		headReq.Header.Set("Range", "bytes=0-1")
 		resp, err := http.DefaultClient.Do(headReq)
 		if err != nil {
 			return nil, err
