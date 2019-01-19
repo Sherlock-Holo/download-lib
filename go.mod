@@ -1,1 +1,1 @@
-module git.gpnu.xyz/SherlockHolo/downloader
+module git.gpnu.xyz/SherlockHolo/download-lib
