@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,7 +75,7 @@ func (req *request) do(from int64) error {
 
 	writer := bufio.NewWriter(req.TmpFile)
 
-	log.Println("start download", req.Url, req.From, req.To)
+	// log.Println("start download", req.Url, req.From, req.To)
 	go func() {
 		buf := make([]byte, bufSize)
 		for {
@@ -96,7 +95,7 @@ func (req *request) do(from int64) error {
 				req.TmpFile.Close()
 				resp.Body.Close()
 
-				log.Println("sub request complete")
+				// log.Println("sub request complete")
 
 				// notify job this sub request is done
 				req.Job.notify <- struct{}{}

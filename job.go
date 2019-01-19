@@ -18,10 +18,10 @@ import (
 )
 
 type Job struct {
-	GID      string
-	Filename string
-	Size     int64
-	SavePath string
+	GID       string
+	Filename  string
+	TotalSize int64
+	SaveDir   string
 
 	completeSize int64
 	failCtx      context.Context
@@ -31,6 +31,7 @@ type Job struct {
 	doneCtx      context.Context
 	doneFunc     context.CancelFunc
 	tmpDir       string
+	speed        int64 // speed per second
 }
 
 func (j *Job) Err() error {
@@ -51,6 +52,24 @@ func (j *Job) Wait() bool {
 	}
 }
 
+func (j *Job) IsDone() bool {
+	select {
+	case <-j.doneCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func (j *Job) IsFailed() bool {
+	select {
+	case <-j.failCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 func (j *Job) checkDone() {
 	for i := 0; i < len(j.requests); i++ {
 		select {
@@ -62,7 +81,7 @@ func (j *Job) checkDone() {
 	log.Println("all sub requests complete")
 
 	// create save file
-	saveFile, err := os.Create(filepath.Join(j.SavePath, fmt.Sprintf("%s-%s", j.Filename, j.GID)))
+	saveFile, err := os.Create(filepath.Join(j.SaveDir, j.GIDName()))
 	if err != nil {
 		j.failFunc()
 		return
@@ -93,25 +112,17 @@ func (j *Job) checkDone() {
 	j.doneFunc()
 }
 
-func (j *Job) IsDone() bool {
-	select {
-	case <-j.doneCtx.Done():
-		return true
-	default:
-		return false
+func (j *Job) calculateSpeed() {
+	var lastCompleteSize int64
+	for j.CompleteSize() < j.TotalSize {
+		completeSize := j.CompleteSize()
+		atomic.StoreInt64(&j.speed, completeSize-lastCompleteSize)
+		lastCompleteSize = completeSize
+		time.Sleep(time.Second)
 	}
 }
 
-func (j *Job) IsFailed() bool {
-	select {
-	case <-j.failCtx.Done():
-		return true
-	default:
-		return false
-	}
-}
-
-func NewJob(url string, parallel int, savePath string) (j *Job, err error) {
+func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err error) {
 	j = new(Job)
 
 	resp, err := http.DefaultClient.Head(url)
@@ -125,7 +136,7 @@ func NewJob(url string, parallel int, savePath string) (j *Job, err error) {
 	if err != nil {
 		return nil, err
 	}
-	j.Size = size
+	j.TotalSize = size
 
 	// get file name
 	var filename string
@@ -164,7 +175,7 @@ func NewJob(url string, parallel int, savePath string) (j *Job, err error) {
 
 	j.GID = gid
 
-	j.SavePath = savePath
+	j.SaveDir = savePath
 
 	// tmp dir is savePath/filename-gid-tmp
 	tmpDir := filepath.Join(savePath, filename+"-"+gid+"-"+"tmp")
@@ -208,10 +219,19 @@ func NewJob(url string, parallel int, savePath string) (j *Job, err error) {
 	j.notify = make(chan struct{}, len(j.requests))
 
 	go j.checkDone()
+	go j.calculateSpeed()
 
 	return j, nil
 }
 
 func (j *Job) CompleteSize() int64 {
 	return atomic.LoadInt64(&j.completeSize)
+}
+
+func (j *Job) Speed() int64 {
+	return atomic.LoadInt64(&j.speed)
+}
+
+func (j *Job) GIDName() string {
+	return fmt.Sprintf("%s-%s", j.Filename, j.GID)
 }
