@@ -79,7 +79,7 @@ func (j *Job) checkDone() {
 	log.Println("all sub requests complete")
 
 	// create save file
-	saveFile, err := os.Create(filepath.Join(j.SaveDir, j.GIDName()))
+	saveFile, err := os.Create(filepath.Join(j.SaveDir, j.GIDFilename()))
 	if err != nil {
 		j.failFunc()
 		return
@@ -229,6 +229,6 @@ func (j *Job) Speed() int64 {
 	return atomic.LoadInt64(&j.speed)
 }
 
-func (j *Job) GIDName() string {
+func (j *Job) GIDFilename() string {
 	return fmt.Sprintf("%s-%s", j.Filename, j.GID)
 }
