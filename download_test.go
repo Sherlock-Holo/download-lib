@@ -1,14 +1,6 @@
 package downloader
 
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
-)
-
-func TestDownload(t *testing.T) {
+/*func TestDownload(t *testing.T) {
 	job, err := StartDownloadJob(
 		"https://mirrors.tuna.tsinghua.edu.cn/archlinux/iso/latest/archlinux-2019.01.01-x86_64.iso",
 		4,
@@ -53,4 +45,4 @@ func (si SpeedInt) String() string {
 		return fmt.Sprintf("%.2f GB/s", float64(si)/1024/1024/1024)
 	}
 
-}
+}*/
