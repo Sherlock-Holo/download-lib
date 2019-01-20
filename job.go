@@ -232,3 +232,11 @@ func (j *Job) Speed() int64 {
 func (j *Job) GIDFilename() string {
 	return fmt.Sprintf("%s-%s", j.Filename, j.GID)
 }
+
+func (j *Job) FailChan() <-chan struct{} {
+	return j.failCtx.Done()
+}
+
+func (j *Job) DoneChan() <-chan struct{} {
+	return j.doneCtx.Done()
+}
