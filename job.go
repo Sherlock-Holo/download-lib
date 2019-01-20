@@ -276,7 +276,18 @@ func (j *Job) CancelChan() <-chan struct{} {
 	return j.cancelCtx.Done()
 }
 
-func (j *Job) Cancel() {
+func (j *Job) Cancel() string {
+	select {
+	case <-j.DoneChan():
+		return "done"
+
+	case <-j.FailChan():
+		return "failed"
+
+	default:
+	}
+
 	j.stopRunningFunc()
 	j.cancelFunc()
+	return "cancel"
 }
