@@ -2,8 +2,6 @@ package downloader
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -170,9 +168,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 	resp.Body.Close()
 
-	now := time.Now()
-	b := md5.Sum([]byte(now.String()))
-	gid := hex.EncodeToString(b[:])
+	gid := genGid()
 
 	j.GID = gid
 
