@@ -148,6 +148,16 @@ func (j *Job) calculateSpeed() {
 }
 
 func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err error) {
+	if _, err := os.Stat(savePath); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(savePath, os.ModePerm); err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+
 	j = new(Job)
 
 	resp, err := http.DefaultClient.Head(url)
