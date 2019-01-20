@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -22,14 +23,19 @@ type Job struct {
 	SaveDir   string
 	TmpDir    string
 
-	completeSize int64
-	failCtx      context.Context
-	failFunc     context.CancelFunc
-	requests     []*request
-	notify       chan struct{} // len is len(requests)
-	doneCtx      context.Context
-	doneFunc     context.CancelFunc
-	speed        int64 // speed per second
+	completeSize    int64
+	failCtx         context.Context
+	failFunc        context.CancelFunc
+	requests        []*request
+	doneNotify      chan struct{} // len is len(requests)
+	doneCtx         context.Context
+	doneFunc        context.CancelFunc
+	speed           int64 // speed per second
+	cancelCtx       context.Context
+	cancelFunc      context.CancelFunc
+	runningCtx      context.Context
+	stopRunningFunc context.CancelFunc
+	deleteWait      *sync.WaitGroup
 }
 
 func (j *Job) Err() error {
@@ -41,12 +47,15 @@ func (j *Job) Err() error {
 	}
 }
 
-func (j *Job) Wait() bool {
+func (j *Job) Wait() string {
 	select {
 	case <-j.doneCtx.Done():
-		return true
+		return "done"
 	case <-j.failCtx.Done():
-		return false
+		return "failed"
+
+	case <-j.cancelCtx.Done():
+		return "cancel"
 	}
 }
 
@@ -68,12 +77,30 @@ func (j *Job) IsFailed() bool {
 	}
 }
 
+func (j *Job) IsCancel() bool {
+	select {
+	case <-j.cancelCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 func (j *Job) checkDone() {
 	for i := 0; i < len(j.requests); i++ {
 		select {
-		case <-j.failCtx.Done():
+		// jos is not running
+		case <-j.runningCtx.Done():
+
+			// wait all sub requests stop
+			j.deleteWait.Wait()
+			log.Println("removing tmp dir", j.TmpDir)
+			if err := os.RemoveAll(j.TmpDir); err != nil {
+				log.Println("removing tmp dir error", err)
+			}
 			return
-		case <-j.notify:
+
+		case <-j.doneNotify:
 		}
 	}
 	log.Println("all sub requests complete")
@@ -86,7 +113,7 @@ func (j *Job) checkDone() {
 	}
 	log.Println(saveFile.Stat())
 
-	// write all tmp file content to save file
+	// write all tmp files content to save file
 	for i := range j.requests {
 		tmpFile, err := os.Open(filepath.Join(j.TmpDir, strconv.Itoa(i)))
 		if err != nil {
@@ -183,6 +210,10 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 	j.doneCtx, j.doneFunc = context.WithCancel(context.Background())
 	j.failCtx, j.failFunc = context.WithCancel(context.Background())
+	j.cancelCtx, j.cancelFunc = context.WithCancel(context.Background())
+	j.runningCtx, j.stopRunningFunc = context.WithCancel(context.Background())
+
+	j.deleteWait = &sync.WaitGroup{}
 
 	partSize := size / int64(parallel)
 
@@ -194,7 +225,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 			to = size
 		}
 
-		req, err := newRequest(j, url, tmpDir, gid, i, from, to, j.failCtx)
+		req, err := newRequest(j, url, tmpDir, gid, i, from, to, j.runningCtx, j.deleteWait)
 		if err != nil {
 			return nil, err
 		}
@@ -213,7 +244,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 		j.requests = append(j.requests, req)
 	}
-	j.notify = make(chan struct{}, len(j.requests))
+	j.doneNotify = make(chan struct{}, len(j.requests))
 
 	go j.checkDone()
 	go j.calculateSpeed()
@@ -239,4 +270,13 @@ func (j *Job) FailChan() <-chan struct{} {
 
 func (j *Job) DoneChan() <-chan struct{} {
 	return j.doneCtx.Done()
+}
+
+func (j *Job) CancelChan() <-chan struct{} {
+	return j.cancelCtx.Done()
+}
+
+func (j *Job) Cancel() {
+	j.stopRunningFunc()
+	j.cancelFunc()
 }
