@@ -1,4 +1,4 @@
-package downloader
+package downloadLib
 
 /*func TestDownload(t *testing.T) {
 	job, err := StartDownloadJob(
