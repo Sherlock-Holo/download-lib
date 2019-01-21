@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -71,6 +70,7 @@ func (req *request) do(from int64) error {
 	if err != nil {
 		return err
 	}
+
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusPartialContent:
 	default:
@@ -162,7 +162,6 @@ func (req *request) do(from int64) error {
 				req.Job.failFunc()
 				req.TmpFile.Close()
 				req.DeleteWait.Done()
-				log.Println("a sub request delete wait done")
 				return
 			}
 		}

@@ -91,10 +91,8 @@ func (j *Job) checkDone() {
 		select {
 		// jos is not running
 		case <-j.runningCtx.Done():
-
 			// wait all sub requests stop
 			j.deleteWait.Wait()
-			log.Println("removing tmp dir", j.TmpDir)
 			if err := os.RemoveAll(j.TmpDir); err != nil {
 				log.Println("removing tmp dir error", err)
 			}
@@ -103,7 +101,6 @@ func (j *Job) checkDone() {
 		case <-j.doneNotify:
 		}
 	}
-	log.Println("all sub requests complete")
 
 	// create save file
 	saveFile, err := os.Create(filepath.Join(j.SaveDir, j.GIDFilename()))
@@ -111,7 +108,6 @@ func (j *Job) checkDone() {
 		j.failFunc()
 		return
 	}
-	log.Println(saveFile.Stat())
 
 	// write all tmp files content to save file
 	for i := range j.requests {
@@ -139,11 +135,23 @@ func (j *Job) checkDone() {
 
 func (j *Job) calculateSpeed() {
 	var lastCompleteSize int64
-	for j.CompleteSize() < j.TotalSize {
-		completeSize := j.CompleteSize()
-		atomic.StoreInt64(&j.speed, completeSize-lastCompleteSize)
-		lastCompleteSize = completeSize
-		time.Sleep(time.Second)
+	for {
+		select {
+		case <-j.runningCtx.Done():
+			return
+		case <-j.doneCtx.Done():
+			return
+		case <-j.failCtx.Done():
+			return
+		case <-j.cancelCtx.Done():
+			return
+
+		default:
+			completeSize := j.CompleteSize()
+			atomic.StoreInt64(&j.speed, completeSize-lastCompleteSize)
+			lastCompleteSize = completeSize
+			time.Sleep(time.Second)
+		}
 	}
 }
 
@@ -225,7 +233,14 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 	j.deleteWait = &sync.WaitGroup{}
 
+	// if size < 1024*1024, disable parallel download because no need to do that
+	if size < 1024*1024 {
+		parallel = 1
+	}
+
 	partSize := size / int64(parallel)
+
+	j.doneNotify = make(chan struct{}, parallel)
 
 	var pointer int64 = 0
 	for i := 0; i < parallel; i++ {
@@ -254,7 +269,6 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 		j.requests = append(j.requests, req)
 	}
-	j.doneNotify = make(chan struct{}, len(j.requests))
 
 	go j.checkDone()
 	go j.calculateSpeed()
