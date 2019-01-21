@@ -2,9 +2,7 @@ package downloadLib
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -20,8 +18,7 @@ type Job struct {
 	GID       string
 	Filename  string
 	TotalSize int64
-	SaveDir   string
-	TmpDir    string
+	SavePath  string
 
 	completeSize    int64
 	failCtx         context.Context
@@ -36,15 +33,9 @@ type Job struct {
 	runningCtx      context.Context
 	stopRunningFunc context.CancelFunc
 	deleteWait      *sync.WaitGroup
-}
-
-func (j *Job) Err() error {
-	select {
-	case <-j.failCtx.Done():
-		return errors.New("job is failed")
-	default:
-		return nil
-	}
+	saveFile        *os.File
+	err             error
+	setErrOnce      sync.Once
 }
 
 func (j *Job) Wait() string {
@@ -93,8 +84,10 @@ func (j *Job) checkDone() {
 		case <-j.runningCtx.Done():
 			// wait all sub requests stop
 			j.deleteWait.Wait()
-			if err := os.RemoveAll(j.TmpDir); err != nil {
-				log.Println("removing tmp dir error", err)
+			j.saveFile.Close()
+
+			if err := os.Remove(filepath.Join(j.SavePath, j.GIDFilename())); err != nil {
+				log.Println("removing save file error", err)
 			}
 			return
 
@@ -102,33 +95,7 @@ func (j *Job) checkDone() {
 		}
 	}
 
-	// create save file
-	saveFile, err := os.Create(filepath.Join(j.SaveDir, j.GIDFilename()))
-	if err != nil {
-		j.failFunc()
-		return
-	}
-
-	// write all tmp files content to save file
-	for i := range j.requests {
-		tmpFile, err := os.Open(filepath.Join(j.TmpDir, strconv.Itoa(i)))
-		if err != nil {
-			j.failFunc()
-			return
-		}
-		if _, err := io.Copy(saveFile, tmpFile); err != nil {
-			j.failFunc()
-			saveFile.Close()
-			tmpFile.Close()
-			return
-		}
-		tmpFile.Close()
-	}
-	saveFile.Close()
-
-	if err := os.RemoveAll(j.TmpDir); err != nil {
-		log.Println("removing tmp dir error", err)
-	}
+	j.saveFile.Close()
 
 	j.doneFunc()
 }
@@ -217,14 +184,17 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 	j.GID = gid
 
-	j.SaveDir = savePath
+	j.SavePath = savePath
 
-	// tmp dir is savePath/filename-gid-tmp
-	tmpDir := filepath.Join(savePath, filename+"-"+gid+"-"+"tmp")
-	j.TmpDir = tmpDir
-	if err := os.Mkdir(tmpDir, os.FileMode(0770)); err != nil {
+	file, err := os.Create(filepath.Join(savePath, j.GIDFilename()))
+	if err != nil {
 		return nil, err
 	}
+	if err := file.Truncate(size); err != nil {
+		return nil, err
+	}
+
+	j.saveFile = file
 
 	j.doneCtx, j.doneFunc = context.WithCancel(context.Background())
 	j.failCtx, j.failFunc = context.WithCancel(context.Background())
@@ -250,7 +220,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 			to = size
 		}
 
-		req, err := newRequest(j, url, tmpDir, gid, i, from, to, j.runningCtx, j.deleteWait)
+		req, err := newRequest(j, url, from, to, j.saveFile, j.runningCtx, j.deleteWait)
 		if err != nil {
 			return nil, err
 		}
@@ -314,4 +284,8 @@ func (j *Job) Cancel() string {
 	j.stopRunningFunc()
 	j.cancelFunc()
 	return "cancel"
+}
+
+func (j *Job) Err() error {
+	return j.err
 }

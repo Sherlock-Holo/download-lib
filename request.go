@@ -1,14 +1,11 @@
 package downloadLib
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -16,34 +13,26 @@ import (
 const bufSize = 128 * 1024
 
 type request struct {
-	Gid        string
 	Job        *Job
-	Id         int
 	Url        string
 	From       int64
 	To         int64
-	TmpFile    *os.File
 	Ctx        context.Context
 	Cancel     context.CancelFunc
 	retry      int
 	DeleteWait *sync.WaitGroup
+	saveFile   *os.File
 }
 
-func newRequest(job *Job, url, tmpDir, gid string, id int, from, to int64, parentCtx context.Context, deleteWait *sync.WaitGroup) (*request, error) {
+func newRequest(job *Job, url string, from, to int64, saveFile *os.File, parentCtx context.Context, deleteWait *sync.WaitGroup) (*request, error) {
 	req := new(request)
 
-	req.Gid = gid
 	req.Job = job
-	req.Id = id
 	req.Url = url
 	req.From = from
 	req.To = to
 
-	tmpFile, err := os.Create(filepath.Join(tmpDir, strconv.Itoa(id)))
-	if err != nil {
-		return nil, err
-	}
-	req.TmpFile = tmpFile
+	req.saveFile = saveFile
 
 	req.Ctx, req.Cancel = context.WithCancel(parentCtx)
 
@@ -80,8 +69,6 @@ func (req *request) do(from int64) error {
 		return fmt.Errorf("http status error %s", resp.Status)
 	}
 
-	writer := bufio.NewWriter(req.TmpFile)
-
 	// log.Println("start download", req.Url, req.From, req.To)
 	go func() {
 		buf := make([]byte, bufSize)
@@ -90,10 +77,13 @@ func (req *request) do(from int64) error {
 
 			// first write receive data if no error
 			if err == nil || err == io.EOF {
-				if _, err := writer.Write(buf[:n]); err != nil {
-					// tmp file write error, it may can't recover
+				if _, err := req.saveFile.WriteAt(buf[:n], req.From); err != nil {
+					// set job err
+					req.Job.setErrOnce.Do(func() {
+						req.Job.err = err
+					})
+					// buf write error, it may can't recover
 					resp.Body.Close()
-					req.TmpFile.Close()
 					req.Job.stopRunningFunc()
 					req.Job.failFunc()
 					req.DeleteWait.Done()
@@ -107,19 +97,7 @@ func (req *request) do(from int64) error {
 
 			// read all data
 			if err == io.EOF {
-				if err := writer.Flush(); err != nil {
-					// tmp file write error, it may can't recover
-					resp.Body.Close()
-					req.TmpFile.Close()
-					req.Job.stopRunningFunc()
-					req.Job.failFunc()
-					req.DeleteWait.Done()
-					return
-				}
-
-				req.TmpFile.Close()
 				resp.Body.Close()
-
 				// notify job this sub request is done
 				req.Job.doneNotify <- struct{}{}
 				return
@@ -127,12 +105,16 @@ func (req *request) do(from int64) error {
 
 			// if some error happened
 			if err != nil {
+				// set job err
+				req.Job.setErrOnce.Do(func() {
+					req.Job.err = err
+				})
+
 				// check if job is stop
 				select {
 				case <-req.Ctx.Done():
 					// job is stop
 					resp.Body.Close()
-					req.TmpFile.Close()
 					req.DeleteWait.Done()
 					return
 
@@ -140,14 +122,6 @@ func (req *request) do(from int64) error {
 				}
 
 				resp.Body.Close()
-				if err := writer.Flush(); err != nil {
-					// tmp file write error, it may can't recover
-					req.TmpFile.Close()
-					req.Job.stopRunningFunc()
-					req.Job.failFunc()
-					req.DeleteWait.Done()
-					return
-				}
 
 				// retry
 				for req.retry < 3 {
@@ -158,9 +132,12 @@ func (req *request) do(from int64) error {
 				}
 
 				// retry more than 3 times, job fail
+				// set job err
+				req.Job.setErrOnce.Do(func() {
+					req.Job.err = err
+				})
 				req.Job.stopRunningFunc()
 				req.Job.failFunc()
-				req.TmpFile.Close()
 				req.DeleteWait.Done()
 				return
 			}
