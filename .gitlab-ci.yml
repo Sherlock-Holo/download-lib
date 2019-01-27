@@ -15,6 +15,8 @@ before_script:
   - mkdir -p $GOPATH/src/$(dirname $REPO_NAME)
   - ln -svf $CI_PROJECT_DIR $GOPATH/src/$REPO_NAME
   - cd $GOPATH/src/$REPO_NAME
+  - export https_proxy=202.192.72.251:8118
+  - export no_proxy=localhost,127.0.0.1,git.gpnu.xyz,202.192.72.192/26
   - export GO111MODULE=on
   - go get -v
 
