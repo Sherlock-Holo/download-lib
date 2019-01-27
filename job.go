@@ -27,12 +27,12 @@ type Job struct {
 	doneNotify      chan struct{} // len is len(requests)
 	doneCtx         context.Context
 	doneFunc        context.CancelFunc
-	speed           int64 // speed per second
-	cancelCtx       context.Context
+	speed           int64           // speed per second
+	cancelCtx       context.Context // if cancelCtx is done, job is cancel
 	cancelFunc      context.CancelFunc
-	runningCtx      context.Context
+	runningCtx      context.Context // if runningCtx is done, job stops abnormally
 	stopRunningFunc context.CancelFunc
-	deleteWait      *sync.WaitGroup
+	deleteWait      *sync.WaitGroup // wait for all sub-requests stop
 	saveFile        *os.File
 	err             error
 	setErrOnce      sync.Once
@@ -107,10 +107,6 @@ func (j *Job) calculateSpeed() {
 		case <-j.runningCtx.Done():
 			return
 		case <-j.doneCtx.Done():
-			return
-		case <-j.failCtx.Done():
-			return
-		case <-j.cancelCtx.Done():
 			return
 
 		default:

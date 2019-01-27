@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/exp/xerrors"
 )
 
 const bufSize = 128 * 1024
@@ -80,7 +82,7 @@ func (req *request) do(from int64) error {
 				if _, err := req.saveFile.WriteAt(buf[:n], req.From); err != nil {
 					// set job err
 					req.Job.setErrOnce.Do(func() {
-						req.Job.err = err
+						req.Job.err = xerrors.Errorf("%s: %w", err, ErrBase)
 					})
 					// buf write error, it may can't recover
 					resp.Body.Close()
