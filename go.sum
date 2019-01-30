@@ -1,3 +1,4 @@
+github.com/golang/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2 h1:SJTvLnDpy8YvQd8gGz9d6iSvgP2Q1O6kbfAPZg/VTdE=
 github.com/golang/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2/go.mod h1:0mN41TEPneeOMHgroJP7XtMdJEbOR2YvpvJhG5ZGqAE=
 golang.org/x/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2 h1:/i3K9A294/yGUlbRTrMo4rSmNEPUVb3EUgqzo171PiQ=
 golang.org/x/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2/go.mod h1:0mN41TEPneeOMHgroJP7XtMdJEbOR2YvpvJhG5ZGqAE=

@@ -51,7 +51,7 @@ func (req *request) Do() error {
 func (req *request) do(from int64) error {
 	httpReq, err := http.NewRequest(http.MethodGet, req.Url, nil)
 	if err != nil {
-		return err
+		return xerrors.Errorf("create sub-get-request error: %W", err)
 	}
 	httpReq = httpReq.WithContext(req.Ctx)
 
@@ -59,7 +59,7 @@ func (req *request) do(from int64) error {
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return err
+		return xerrors.Errorf("start sub-request error: %w", err)
 	}
 
 	switch resp.StatusCode {
@@ -68,10 +68,9 @@ func (req *request) do(from int64) error {
 		resp.Body.Close()
 		req.Job.stopRunningFunc()
 		req.Job.failFunc()
-		return fmt.Errorf("http status error %s", resp.Status)
+		return xerrors.Errorf("http status error %s: %w", resp.Status, ErrBase)
 	}
 
-	// log.Println("start download", req.Url, req.From, req.To)
 	go func() {
 		buf := make([]byte, bufSize)
 		for {
@@ -109,7 +108,7 @@ func (req *request) do(from int64) error {
 			if err != nil {
 				// set job err
 				req.Job.setErrOnce.Do(func() {
-					req.Job.err = err
+					req.Job.err = xerrors.Errorf("sub-request downloads error: %w", err)
 				})
 
 				// check if job is stop
@@ -136,7 +135,7 @@ func (req *request) do(from int64) error {
 				// retry more than 3 times, job fail
 				// set job err
 				req.Job.setErrOnce.Do(func() {
-					req.Job.err = err
+					req.Job.err = xerrors.Errorf("sub-request downloads error: %w", err)
 				})
 				req.Job.stopRunningFunc()
 				req.Job.failFunc()

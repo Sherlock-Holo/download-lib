@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/exp/xerrors"
 )
 
 type Job struct {
@@ -218,7 +220,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 
 		req, err := newRequest(j, url, from, to, j.saveFile, j.runningCtx, j.deleteWait)
 		if err != nil {
-			return nil, err
+			return nil, xerrors.Errorf("create sub-request error: %w", err)
 		}
 
 		// try 3 times to start the downloading
