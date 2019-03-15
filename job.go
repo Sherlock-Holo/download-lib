@@ -386,3 +386,7 @@ func (j *Job) Pause() string {
 		return cancel
 	}
 }
+
+func (j *Job) PauseChan() <-chan struct{} {
+	return j.pauseCtx.Done()
+}
