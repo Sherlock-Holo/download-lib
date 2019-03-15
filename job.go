@@ -2,6 +2,7 @@ package downloadLib
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"mime"
@@ -13,7 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/exp/xerrors"
+	"github.com/etcd-io/bbolt"
+	"golang.org/x/xerrors"
+)
+
+const (
+	fileMode = 0644
 )
 
 type Job struct {
@@ -22,22 +28,24 @@ type Job struct {
 	TotalSize int64
 	SavePath  string
 
-	completeSize    int64
-	failCtx         context.Context
-	failFunc        context.CancelFunc
-	requests        []*request
-	doneNotify      chan struct{} // len is len(requests)
-	doneCtx         context.Context
-	doneFunc        context.CancelFunc
-	speed           int64           // speed per second
-	cancelCtx       context.Context // if cancelCtx is done, job is cancel
-	cancelFunc      context.CancelFunc
-	runningCtx      context.Context // if runningCtx is done, job stops abnormally
-	stopRunningFunc context.CancelFunc
-	deleteWait      *sync.WaitGroup // wait for all sub-requests stop
-	saveFile        *os.File
-	err             error
-	setErrOnce      sync.Once
+	completeSize   int64
+	failCtx        context.Context    // if failCtx is done, job is failed
+	failFunc       context.CancelFunc // fail the job
+	requests       []*request
+	doneNotify     chan struct{}      // len is len(requests)
+	doneCtx        context.Context    // if doneCtx is done, job is done
+	doneFunc       context.CancelFunc // finish the job
+	speed          int64              // speed per second
+	cancelCtx      context.Context    // if cancelCtx is done, job is canceled
+	cancelFunc     context.CancelFunc // cancel the job
+	deleteWait     *sync.WaitGroup    // wait for all sub-requests stop
+	saveFile       *os.File
+	err            error
+	setErrOnce     sync.Once
+	downloadDB     *bbolt.DB
+	downloadDBPath string
+	pauseCtx       context.Context    // if pauseCtx is done, job is paused
+	pauseFunc      context.CancelFunc // pause job
 }
 
 func (j *Job) Wait() string {
@@ -48,7 +56,13 @@ func (j *Job) Wait() string {
 		return "failed"
 
 	case <-j.cancelCtx.Done():
-		return "cancel"
+
+		select {
+		case <-j.pauseCtx.Done():
+			return "paused"
+		default:
+		}
+		return "canceled"
 	}
 }
 
@@ -80,20 +94,41 @@ func (j *Job) IsCancel() bool {
 }
 
 func (j *Job) checkDone() {
+	defer func() {
+		if err := j.downloadDB.Close(); err != nil {
+			log.Println(xerrors.Errorf("close download db file failed: %w", err))
+		}
+
+		// if just pause job, don't remove progress db file
+		select {
+		case <-j.pauseCtx.Done():
+		default:
+			// job is finished, cancel or failed
+			if err := os.Remove(j.downloadDBPath); err != nil {
+				log.Println(xerrors.Errorf("delete download db file failed: %w", err))
+			}
+		}
+	}()
+
 	for i := 0; i < len(j.requests); i++ {
 		select {
-		// jos is not running
-		case <-j.runningCtx.Done():
+		// jos is canceled or paused
+		case <-j.cancelCtx.Done():
 			// wait all sub requests stop
 			j.deleteWait.Wait()
 			j.saveFile.Close()
 
-			if err := os.Remove(filepath.Join(j.SavePath, j.GIDFilename())); err != nil {
-				log.Println("removing save file error", err)
+			// if just pause job, don't remove file
+			select {
+			case <-j.pauseCtx.Done():
+			default:
+				if err := os.Remove(filepath.Join(j.SavePath, j.GIDFilename())); err != nil {
+					log.Printf("%+v", xerrors.Errorf("delete save file failed: %w", err))
+				}
 			}
 			return
 
-		case <-j.doneNotify:
+		case <-j.doneNotify: // wait sub request done
 		}
 	}
 
@@ -106,7 +141,7 @@ func (j *Job) calculateSpeed() {
 	var lastCompleteSize int64
 	for {
 		select {
-		case <-j.runningCtx.Done():
+		case <-j.cancelCtx.Done():
 			return
 		case <-j.doneCtx.Done():
 			return
@@ -124,31 +159,32 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 	if _, err := os.Stat(savePath); err != nil {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(savePath, os.ModePerm); err != nil {
-				return nil, err
+				return nil, xerrors.Errorf("mkdir download path failed: %w", err)
 			}
 		} else {
-			return nil, err
+			return nil, xerrors.Errorf("check download path failed: %w", err)
 		}
 	}
 
 	j = new(Job)
 
-	resp, err := http.DefaultClient.Head(url)
+	resp, err := httpClient.Head(url)
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("get url head response failed: %w", err)
 	}
+	defer resp.Body.Close()
 
 	// get file size
-	sizeStr := resp.Header.Get("Content-Length")
+	sizeStr := resp.Header.Get("content-length")
 	size, err := strconv.ParseInt(sizeStr, 10, 64)
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("parse content length failed: %w", err)
 	}
 	j.TotalSize = size
 
 	// get file name
 	var filename string
-	if contentDisposition := resp.Header.Get("Content-Disposition"); contentDisposition != "" {
+	if contentDisposition := resp.Header.Get("content-disposition"); contentDisposition != "" {
 		if _, params, err := mime.ParseMediaType(contentDisposition); err == nil {
 			filename = params["filename"]
 		}
@@ -159,16 +195,16 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 	j.Filename = filename
 
 	// check if target support parallel download
-	if resp.Header.Get("Accept-Ranges") != "bytes" {
+	if resp.Header.Get("accept-ranges") != "bytes" {
 		// try to check again
 		headReq, err := http.NewRequest(http.MethodHead, url, nil)
 		if err != nil {
-			return nil, err
+			return nil, xerrors.Errorf("new http HEAD request failed: %w", err)
 		}
-		headReq.Header.Set("Range", "bytes=0-1")
-		resp, err := http.DefaultClient.Do(headReq)
+		headReq.Header.Set("range", "bytes=0-1")
+		resp, err := httpClient.Do(headReq)
 		if err != nil {
-			return nil, err
+			return nil, xerrors.Errorf("get url head response failed: %w", err)
 		}
 		if resp.StatusCode != http.StatusPartialContent {
 			parallel = 1
@@ -176,20 +212,16 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 		resp.Body.Close()
 	}
 
-	resp.Body.Close()
-
-	gid := genGid()
-
-	j.GID = gid
+	j.GID = genGid()
 
 	j.SavePath = savePath
 
 	file, err := os.Create(filepath.Join(savePath, j.GIDFilename()))
 	if err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("create download file failed: %w", err)
 	}
 	if err := file.Truncate(size); err != nil {
-		return nil, err
+		return nil, xerrors.Errorf("truncate download file failed: %w", err)
 	}
 
 	j.saveFile = file
@@ -197,11 +229,11 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 	j.doneCtx, j.doneFunc = context.WithCancel(context.Background())
 	j.failCtx, j.failFunc = context.WithCancel(context.Background())
 	j.cancelCtx, j.cancelFunc = context.WithCancel(context.Background())
-	j.runningCtx, j.stopRunningFunc = context.WithCancel(context.Background())
+	j.pauseCtx, j.pauseFunc = context.WithCancel(context.Background())
 
 	j.deleteWait = &sync.WaitGroup{}
 
-	// if size < 1024*1024, disable parallel download because no need to do that
+	// if size < 1KiB, disable parallel download because no need to do that
 	if size < 1024*1024 {
 		parallel = 1
 	}
@@ -209,6 +241,61 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 	partSize := size / int64(parallel)
 
 	j.doneNotify = make(chan struct{}, parallel)
+
+	// create progress db
+	j.downloadDBPath = filepath.Join(savePath, fmt.Sprintf("%s.bbdb", j.GIDFilename()))
+	j.downloadDB, err = bbolt.Open(j.downloadDBPath, fileMode, nil)
+	if err != nil {
+		return nil, xerrors.Errorf("create download db failed: %w", err)
+	}
+
+	// create head info bucket
+	if err := j.downloadDB.Update(func(tx *bbolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("head"))
+		if err != nil {
+			return xerrors.Errorf("create head bucket failed: %w", err)
+		}
+
+		if err := bucket.Put([]byte("gid"), []byte(j.GID)); err != nil {
+			return xerrors.Errorf("save gid failed: %w", err)
+		}
+
+		if err := bucket.Put([]byte("filename"), []byte(j.Filename)); err != nil {
+			return xerrors.Errorf("save filename failed: %w", err)
+		}
+
+		if err := bucket.Put([]byte("url"), []byte(url)); err != nil {
+			return xerrors.Errorf("save url failed: %w", err)
+		}
+
+		totalSize := make([]byte, 8)
+		binary.BigEndian.PutUint64(totalSize, uint64(j.TotalSize))
+		if err := bucket.Put([]byte("total size"), totalSize); err != nil {
+			return xerrors.Errorf("save total size failed: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, xerrors.Errorf("create head db info failed: %w", err)
+	}
+
+	if err := j.downloadDB.Update(func(tx *bbolt.Tx) error {
+		bucket, err := tx.CreateBucket([]byte("sub-requests"))
+		if err != nil {
+			return xerrors.Errorf("create sub-requests bucket failed: %w", err)
+		}
+
+		for i := 0; i < parallel; i++ {
+			if err := bucket.Put([]byte{byte(i)}, []byte{byte(i)}); err != nil {
+				return xerrors.Errorf("create request ID %d failed: %w", i, err)
+			}
+		}
+
+		return nil
+
+	}); err != nil {
+		return nil, xerrors.Errorf("create sub-requests failed: %w", err)
+	}
 
 	var pointer int64 = 0
 	for i := 0; i < parallel; i++ {
@@ -218,10 +305,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 			to = size
 		}
 
-		req, err := newRequest(j, url, from, to, j.saveFile, j.runningCtx, j.deleteWait)
-		if err != nil {
-			return nil, xerrors.Errorf("create sub-request error: %w", err)
-		}
+		req := newRequest(j, uint8(i), url, from, to, j.saveFile, j.cancelCtx, j.deleteWait)
 
 		// try 3 times to start the downloading
 		for i := 0; i < 3; i++ {
@@ -232,7 +316,7 @@ func StartDownloadJob(url string, parallel int, savePath string) (j *Job, err er
 		// start failed
 		if err != nil {
 			j.failFunc()
-			return nil, err
+			return nil, xerrors.Errorf("start sub requests failed: %w", err)
 		}
 
 		j.requests = append(j.requests, req)
@@ -279,11 +363,26 @@ func (j *Job) Cancel() string {
 	default:
 	}
 
-	j.stopRunningFunc()
 	j.cancelFunc()
 	return "cancel"
 }
 
 func (j *Job) Err() error {
 	return j.err
+}
+
+func (j *Job) Pause() string {
+	j.pauseFunc()
+
+	cancel := j.Cancel()
+	switch cancel {
+	case "done":
+		return "done"
+
+	case "cancel":
+		return "paused"
+
+	default:
+		return cancel
+	}
 }

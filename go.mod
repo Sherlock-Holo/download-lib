@@ -1,5 +1,8 @@
 module git.gpnu.xyz/SherlockHolo/download-lib
 
-require golang.org/x/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2
-
-replace golang.org/x/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2 => github.com/golang/exp/xerrors v0.0.0-20190125153040-c74c464bbbf2
+require (
+	github.com/etcd-io/bbolt v1.3.2
+	go.etcd.io/bbolt v1.3.2 // indirect
+	golang.org/x/sys v0.0.0-20190204203706-41f3e6584952 // indirect
+	golang.org/x/xerrors v0.0.0-20190212162355-a5947ffaace3
+)
